@@ -1,5 +1,10 @@
-# exercise3_parallelization.R
-# Ejercicio de paralelización: bootstrap de coeficientes con distinto nº de cores
+# exercise3_4_parallelization.R
+# Ejercicio 3: benchmark bootstrap con distinto nº de cores (2 a 8)
+# Ejercicio 4: comparativa doParallel vs mirai vs furrr (al final del script)
+#
+# Ambos en el mismo script porque el ejercicio 4 pide explícitamente
+# "modify the script in the previous exercise to add this comparison at the end"
+#
 # Uso foreach + doParallel porque mclapply no funciona en Windows
 # (cae a 1 core sin avisar, así que el benchmark no tendría sentido)
 
