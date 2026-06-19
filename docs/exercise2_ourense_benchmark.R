@@ -19,22 +19,32 @@ library(here)
 parquet_url <- "https://data-emf.creaf.cat/public/parquet/stations_data_historical/meteo_stations_2000_2024.parquet"
 local_file  <- here::here("data", "meteo_stations_2000_2024.parquet")
 
-# primero miro el esquema para saber exactamente cómo se llaman las columnas
-# (ajustar los nombres en la query si son diferentes)
+# miro el esquema primero (columnas reales del archivo)
 con_explore <- dbConnect(duckdb())
+dbExecute(con_explore, "INSTALL httpfs; LOAD httpfs;")
 print(dbGetQuery(con_explore,
   paste0("DESCRIBE SELECT * FROM read_parquet('", parquet_url, "') LIMIT 1")))
 print(dbGetQuery(con_explore,
-  paste0("SELECT * FROM read_parquet('", parquet_url, "') LIMIT 5")))
+  paste0("SELECT * FROM read_parquet('", parquet_url, "') LIMIT 3")))
 dbDisconnect(con_explore, shutdown = TRUE)
 
-# query para filtrar Ourense 2020 - adaptar nombres de columna si hace falta
+# Columnas del archivo (verificado):
+#   station_province  → nombre de provincia
+#   year              → año (integer)
+#   dates             → fecha (VARCHAR)
+#   stationID         → id de estación
+#   MaxTemperature, MinTemperature, MeanTemperature  → temperaturas (°C)
+#   MeanRelativeHumidity  → humedad relativa (%)
+#   Precipitation         → precipitación (mm)
+
 ourense_sql <- function(src) {
   paste0(
-    "SELECT date, stationID, province, tmax, tmin, tmean, hr, pcp
+    "SELECT dates, stationID, station_province,
+            MaxTemperature, MinTemperature, MeanTemperature,
+            MeanRelativeHumidity, Precipitation
      FROM read_parquet('", src, "')
-     WHERE province = 'Ourense' AND year(date) = 2020
-     ORDER BY stationID, date"
+     WHERE station_province = 'Ourense' AND year = 2020
+     ORDER BY stationID, dates"
   )
 }
 
@@ -44,6 +54,7 @@ bm <- bench::mark(
   # A - duckdb remoto, sin descarga
   duckdb_remote = {
     con <- dbConnect(duckdb())
+    dbExecute(con, "LOAD httpfs;")
     result <- dbGetQuery(con, ourense_sql(parquet_url))
     dbDisconnect(con, shutdown = TRUE)
     result
@@ -65,9 +76,11 @@ bm <- bench::mark(
     tmp <- tempfile(fileext = ".parquet")
     download.file(parquet_url, destfile = tmp, mode = "wb", quiet = TRUE)
     result <- arrow::open_dataset(tmp) |>
-      filter(province == "Ourense", year(date) == 2020) |>
-      select(date, stationID, province, tmax, tmin, tmean, hr, pcp) |>
-      arrange(stationID, date) |>
+      filter(station_province == "Ourense", year == 2020) |>
+      select(dates, stationID, station_province,
+             MaxTemperature, MinTemperature, MeanTemperature,
+             MeanRelativeHumidity, Precipitation) |>
+      arrange(stationID, dates) |>
       collect()
     file.remove(tmp)
     result
@@ -83,19 +96,19 @@ print(bm[order(bm$median), c("expression", "median", "mem_alloc")])
 
 saveRDS(bm, here::here("results", "exercise2_benchmark_results.rds"))
 
-# resumen de los datos extraídos (si tengo el archivo en local)
+# resumen de los datos (si tengo el archivo local)
 if (file.exists(local_file)) {
   con <- dbConnect(duckdb())
   resumen <- dbGetQuery(con, paste0(
     "SELECT stationID,
             COUNT(*) AS n_dias,
-            ROUND(AVG(tmax), 2) AS media_tmax,
-            ROUND(AVG(tmin), 2) AS media_tmin,
-            ROUND(AVG(tmean), 2) AS media_tmean,
-            ROUND(AVG(hr), 2) AS media_hr,
-            ROUND(SUM(pcp), 1) AS pcp_total_mm
+            ROUND(AVG(MaxTemperature), 2) AS media_tmax,
+            ROUND(AVG(MinTemperature), 2) AS media_tmin,
+            ROUND(AVG(MeanTemperature), 2) AS media_tmean,
+            ROUND(AVG(MeanRelativeHumidity), 2) AS media_hr,
+            ROUND(SUM(Precipitation), 1) AS pcp_total_mm
      FROM read_parquet('", local_file, "')
-     WHERE province = 'Ourense' AND year(date) = 2020
+     WHERE station_province = 'Ourense' AND year = 2020
      GROUP BY stationID ORDER BY stationID"
   ))
   dbDisconnect(con, shutdown = TRUE)

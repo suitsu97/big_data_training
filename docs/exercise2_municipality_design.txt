@@ -84,8 +84,14 @@ PROPOSED STEPS
        · Using the nearest station (st_nearest_feature).
        · Flagging them as interpolated vs. observed.
 
-   Parallelisation option: use parallel::mclapply() or mirai to process
-   provinces in parallel (split by province code before grouping).
+   Parallelización con purrr + mirai/furrr (estrategia actualizada):
+   Separar los datos por provincia y aplicar purrr::map() sobre la lista
+   de provincias. Cada elemento de la lista es procesado por una función
+   que filtra, hace el join espacial y agrega. Para paralelizar:
+     - furrr::future_map() con plan(multisession, workers = n_cores)
+     - o mirai_map() si se busca menor overhead (más eficiente en Windows)
+   El beneficio es mayor si el paso dominante es computación (agregación),
+   menos si el cuello de botella es la lectura desde el parquet remoto.
 
 8. HANDLE MISSING DATA
    - Some stations may have gaps. Document % missing per variable per station.
@@ -122,4 +128,30 @@ TOOLS SUMMARY
   sf       → municipality boundaries and spatial join (steps 2–4)
   dplyr    → aggregation and joining (steps 6–7)
   arrow    → writing the output parquet (step 9)
-  parallel / mirai → optional parallelisation across provinces (step 7)
+  purrr     → map() sobre lista de provincias para procesar cada una
+  furrr     → future_map() para versión paralela de lo anterior
+  mirai     → mirai_map() alternativa más eficiente (menos overhead)
+  parallel / mirai → parallelisation across provinces (step 7)
+
+
+REVISIÓN TRAS APRENDER LOOPS Y PARALELIZACIÓN (ejercicio 5)
+------------------------------------------------------------
+Después de ver los ejercicios 3-5, cambiaría el paso 7 así:
+
+Antes pensaba en procesar todo junto con dplyr::group_by(municipio, date).
+Ahora usaría purrr::map() sobre la lista de provincias (50 elementos),
+donde cada llamada procesa una provincia completa:
+
+  process_province <- function(prov, data_2020, lookup, municipalities) {
+    data_prov <- filter(data_2020, province == prov)
+    joined    <- left_join(data_prov, lookup, by = "stationID")
+    summarise(group_by(joined, municipality_code, date), ...)
+  }
+
+  results <- purrr::map(provinces, process_province, data_2020, lookup, munic)
+  output  <- bind_rows(results)
+
+Para paralelizar, sustituir map() por furrr::future_map() o mirai_map().
+La ganancia de tiempo depende de si el cuello de botella es la lectura
+del parquet o el cómputo. Si se lee desde local (ya descargado), la
+paralelización del cómputo sí debería dar mejora notable.
