@@ -3,7 +3,10 @@
 
 required_packages <- c(
   "data.table",
+  "dplyr",
   "purrr",
+  "furrr",
+  "future",
   "parallel",
   "foreach",
   "doParallel",
@@ -16,6 +19,9 @@ required_packages <- c(
   "DBI",
   "bench",
   "ggplot2",
+  "ggbeeswarm",
+  "mapSpain",
+  "gstat",
   "here"
 )
 
@@ -27,7 +33,10 @@ if (length(missing_packages) > 0) {
 
 # Load libraries
 library(data.table)
+library(dplyr)
 library(purrr)
+library(furrr)
+library(future)
 library(parallel)
 library(foreach)
 library(doParallel)
@@ -40,4 +49,7 @@ library(duckdb)
 library(DBI)
 library(bench)
 library(ggplot2)
+library(ggbeeswarm)
+library(mapSpain)
+library(gstat)
 library(here)
