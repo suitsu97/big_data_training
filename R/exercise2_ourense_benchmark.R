@@ -1,5 +1,9 @@
 # exercise2_ourense_benchmark.R
-# Ejercicio 2.1 - extraer y resumir datos meteorológicos diarios de Ourense (2020)
+# Ejercicio 2 - datos meteorológicos diarios de Ourense (2020)
+#
+# 2.1  benchmark de lectura (este script)
+# 2.2  diseño del procesado para todos los municipios de España
+#      → ver docs/exercise2_municipality_design.txt
 # temperaturas, humedad relativa y precipitación
 #
 # Comparo tres formas de leer/procesar el archivo:
