@@ -1,6 +1,6 @@
 # big_data_training
 
-Repositorio de la **Actividad Final** del módulo *4.3 – Aplicaciones y desarrollos en entorno R*
+Repositorio de la **Actividad Final** del módulo *4 – Aplicaciones y desarrollos en entorno R*
 (Curso de Ciencia de Datos).
 
 Contiene los scripts de los 6 ejercicios del módulo, organizados en carpetas siguiendo
