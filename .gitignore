@@ -1,6 +1,11 @@
 # Ignore raw data folder
 raw_data/
 
+# Large data files (downloaded locally, not tracked)
+data/*.parquet
+data/*.csv
+results/*.rds
+
 # R specific
 .Rhistory
 .RData

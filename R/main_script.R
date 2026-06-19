@@ -5,12 +5,18 @@ required_packages <- c(
   "data.table",
   "purrr",
   "parallel",
+  "foreach",
+  "doParallel",
   "mirai",
   "sf",
   "terra",
   "arrow",
   "geoarrow",
-  "duckdb"
+  "duckdb",
+  "DBI",
+  "bench",
+  "ggplot2",
+  "here"
 )
 
 # Install any missing packages
@@ -23,9 +29,15 @@ if (length(missing_packages) > 0) {
 library(data.table)
 library(purrr)
 library(parallel)
+library(foreach)
+library(doParallel)
 library(mirai)
 library(sf)
 library(terra)
 library(arrow)
 library(geoarrow)
 library(duckdb)
+library(DBI)
+library(bench)
+library(ggplot2)
+library(here)
