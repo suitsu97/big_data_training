@@ -40,7 +40,8 @@ dbDisconnect(con, shutdown = TRUE)
 cat("Provincias encontradas:", length(provinces), "\n")
 
 # función que procesa una provincia: datos 2020, resumen diario por estación
-process_province <- function(prov) {
+# lf se pasa explícitamente para que funcione también en workers de mirai
+process_province <- function(prov, lf) {
   con <- dbConnect(duckdb())
   result <- dbGetQuery(con, paste0(
     "SELECT dates, stationID, station_province,
@@ -49,7 +50,7 @@ process_province <- function(prov) {
             AVG(MeanTemperature) AS mean_tmean,
             AVG(MeanRelativeHumidity) AS mean_hr,
             SUM(Precipitation) AS total_pcp
-     FROM read_parquet('", local_file, "')
+     FROM read_parquet('", lf, "')
      WHERE station_province = '", prov, "' AND year = 2020
      GROUP BY dates, stationID, station_province
      ORDER BY stationID, dates"
@@ -61,7 +62,7 @@ process_province <- function(prov) {
 # versión secuencial con purrr::map
 message("purrr::map secuencial...")
 t_seq <- system.time({
-  results_seq <- purrr::map(provinces, process_province)
+  results_seq <- purrr::map(provinces, process_province, lf = local_file)
 })
 data_2020 <- bind_rows(results_seq)
 cat("Filas totales:", nrow(data_2020), "| Tiempo:", round(t_seq["elapsed"], 1), "s\n")
@@ -70,16 +71,17 @@ cat("Filas totales:", nrow(data_2020), "| Tiempo:", round(t_seq["elapsed"], 1), 
 message("furrr::future_map...")
 t_furrr <- system.time({
   plan(multisession, workers = parallel::detectCores())
-  results_furrr <- future_map(provinces, process_province)
+  results_furrr <- future_map(provinces, process_province, lf = local_file)
   plan(sequential)
 })
 cat("furrr:", round(t_furrr["elapsed"], 1), "s\n")
 
 # versión paralela con mirai
+# local_file se pasa como argumento (mirai no copia el entorno global)
 message("mirai_map...")
 t_mirai <- system.time({
   daemons(parallel::detectCores())
-  results_mirai <- mirai_map(provinces, process_province)[]
+  results_mirai <- mirai_map(provinces, process_province, lf = local_file)[]
   daemons(0)
 })
 cat("mirai:", round(t_mirai["elapsed"], 1), "s\n")
