@@ -61,8 +61,8 @@ p <- autoplot(cores_benchmark) +
   labs(
     title = "Bootstrapping: tiempo de ejecución según nº de cores",
     subtitle = paste0("foreach + doParallel, ", n_repetitions, " repeticiones, Windows"),
-    x = "Nº de cores",
-    y = "Tiempo"
+    x = "Tiempo de ejecución",
+    y = "Nº de cores"
   ) +
   theme_bw()
 
