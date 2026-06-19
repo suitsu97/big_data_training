@@ -1,0 +1,64 @@
+BASES DE DATOS UTILIZADAS EN EL PROYECTO
+=========================================
+
+1. DATOS HISTÓRICOS DE ESTACIONES METEOROLÓGICAS
+-------------------------------------------------
+Archivo : meteo_stations_2000_2024.parquet
+Fuente  : EMF-CREAF (Ecological & Forest Applications Research Centre)
+URL     : https://data-emf.creaf.cat/public/parquet/stations_data_historical/meteo_stations_2000_2024.parquet
+Cobertura: España peninsular e islas, años 2000-2024
+Tamaño  : ~500 MB
+Formato : GeoParquet (columna geom en WGS84 / EPSG:4326)
+
+Principales variables:
+  stationID            - identificador único de la estación
+  station_province     - provincia (e.g. 'Asturias', 'Ourense')
+  dates                - fecha de observación (VARCHAR, YYYY-MM-DD)
+  year / month / day   - componentes de la fecha (integer)
+  MaxTemperature       - temperatura máxima diaria (ºC)
+  MinTemperature       - temperatura mínima diaria (ºC)
+  MeanTemperature      - temperatura media diaria (ºC)
+  MeanRelativeHumidity - humedad relativa media diaria (%)
+  Precipitation        - precipitación diaria acumulada (mm)
+  geom                 - geometría del punto (WKB, EPSG:4326)
+
+Uso en ejercicios: 1, 2, 5, 6
+
+
+2. DATOS OFICIALES INTERPOLADOS (GRID DIARIO)
+----------------------------------------------
+Archivo : YYYYMMDD.parquet (un fichero por día)
+Fuente  : EMF-CREAF
+URL base: https://data-emf.creaf.cat/public/parquet/daily_interpolated_meteo/
+Cobertura: España peninsular, 2000-2024
+Tamaño  : ~220 MB por fichero
+Formato : GeoParquet (columna geom en ETRS89 UTM30N / EPSG:25830)
+
+Principales variables:
+  dates                - fecha (DATE)
+  Precipitation        - precipitación interpolada (mm)
+  MeanTemperature      - temperatura media interpolada (ºC)
+  MaxTemperature       - temperatura máxima interpolada (ºC)
+  MinTemperature       - temperatura mínima interpolada (ºC)
+  MeanRelativeHumidity - humedad relativa interpolada (%)
+  geom                 - geometría del punto de grid (EPSG:25830)
+
+Uso en ejercicios: 6
+
+
+3. DATASET IRIS (R base)
+------------------------
+Fuente  : Dataset clásico de R (Fisher, 1936). Sin descarga.
+Tamaño  : 150 filas x 5 columnas (se usan 85 filas tras filtrar setosa)
+Variables: Species (factor), Petal.Length (cm)
+Uso     : benchmark de paralelización (regresión logística bootstrap)
+Uso en ejercicios: 3, 4
+
+
+NOTAS
+-----
+- Los parquets del EMF-CREAF son públicos, sin autenticación.
+- DuckDB los lee directamente desde URL con la extensión httpfs.
+- El parquet de estaciones (~500 MB) se descarga una vez a data/.
+- Los parquets del grid oficial (~220 MB c/u) se leen remotamente.
+- Generado por main_script.R el 2026-06-20
