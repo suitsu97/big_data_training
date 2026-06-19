@@ -31,6 +31,7 @@ bm <- bench::mark(
 
   duckdb_remote = {
     con <- dbConnect(duckdb())
+    dbExecute(con, "LOAD httpfs;")  # necesario para leer desde URL
     result <- dbGetQuery(con, paste0("SELECT * FROM read_parquet('", parquet_url, "')"))
     dbDisconnect(con, shutdown = TRUE)
     result

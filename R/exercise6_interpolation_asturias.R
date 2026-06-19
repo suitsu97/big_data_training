@@ -3,12 +3,13 @@
 #
 # Pasos:
 #   1. Extraer datos de estaciones en Asturias para 2007
-#   2. Obtener límite de Asturias (mapSpain)
-#   3. Crear grid de 500m
-#   4. Interpolar precipitación cada día con IDW (gstat)
-#   5. Calcular bias medio (predicho - observado, leave-one-out)
-#   6. Comparar con los datos oficiales interpolados
-#   7. ¿Cuál tiene menos bias, el mío o el oficial?
+#   2. Obtener límite de Asturias (mapSpain) y crear grid 500m
+#   3. Interpolar precipitación cada día con IDW leave-one-out
+#   4. Calcular bias medio (predicho - observado)
+#   5. Comparar con datos oficiales interpolados
+#   6. ¿Cuál tiene menos bias?
+#
+# Datos oficiales: un parquet por día → YYYYMMDD.parquet, geom en EPSG:25830
 
 library(sf)
 library(terra)
@@ -18,21 +19,19 @@ library(dplyr)
 library(purrr)
 library(gstat)
 library(mapSpain)
-library(arrow)
 library(here)
 
 parquet_url  <- "https://data-emf.creaf.cat/public/parquet/stations_data_historical/meteo_stations_2000_2024.parquet"
-official_url <- "https://data-emf.creaf.cat/public/parquet/daily_interpolated_meteo/"
+official_base <- "https://data-emf.creaf.cat/public/parquet/daily_interpolated_meteo/"
 local_file   <- here::here("data", "meteo_stations_2000_2024.parquet")
 
-# descargo si no está
 if (!file.exists(local_file)) {
   message("Descargando parquet de estaciones...")
   download.file(parquet_url, destfile = local_file, mode = "wb", quiet = FALSE)
 }
 
 # ============================================================
-# 1. Extraer datos Asturias 2007
+# 1. Datos de estaciones Asturias 2007
 # ============================================================
 
 con <- dbConnect(duckdb())
@@ -50,174 +49,170 @@ asturias_data <- dbGetQuery(con, paste0(
 ))
 dbDisconnect(con, shutdown = TRUE)
 
-cat("Estaciones únicas en Asturias 2007:", n_distinct(asturias_data$stationID), "\n")
+cat("Estaciones únicas:", n_distinct(asturias_data$stationID), "\n")
 cat("Días disponibles:", n_distinct(asturias_data$dates), "\n")
-print(head(asturias_data))
 
 # ============================================================
 # 2. Límite de Asturias y grid 500m
 # ============================================================
 
 asturias_prov <- mapSpain::esp_get_prov(prov = "Asturias") |>
-  st_transform(25830)  # ETRS89 / UTM zone 30N, unidades en metros
+  st_transform(25830)
 
-# grid de puntos cada 500m dentro de Asturias
 grid_rast <- terra::rast(terra::ext(terra::vect(asturias_prov)),
                           res = 500, crs = "EPSG:25830")
 grid_pts  <- as.data.frame(grid_rast, xy = TRUE) |>
   st_as_sf(coords = c("x", "y"), crs = 25830)
-# me quedo solo con los puntos dentro de Asturias
-grid_pts <- grid_pts[asturias_prov, ]
+grid_pts  <- grid_pts[asturias_prov, ]
 
-cat("Puntos del grid dentro de Asturias:", nrow(grid_pts), "\n")
+cat("Puntos del grid:", nrow(grid_pts), "\n")
 
 # ============================================================
-# 3. Función de interpolación IDW para un día (leave-one-out bias)
+# 3. IDW leave-one-out: bias de mi interpolación
 # ============================================================
 
-# el bias se calcula como leave-one-out:
-# para cada estación, interpolo desde las demás y comparo con observado
+compute_loo_bias <- function(day_str, asturias_data) {
+  day_data <- asturias_data |>
+    filter(dates == day_str, !is.na(Precipitation), !is.na(lon), !is.na(lat))
+  if (nrow(day_data) < 4)
+    return(tibble(dates = day_str, mean_bias = NA_real_, n_stations = nrow(day_data)))
 
-compute_loo_bias <- function(day_str, asturias_data, asturias_prov) {
-  day_data <- asturias_data |> filter(dates == day_str)
-
-  # necesito al menos 4 estaciones con datos
-  day_data <- day_data |> filter(!is.na(Precipitation) & !is.na(lon) & !is.na(lat))
-  if (nrow(day_data) < 4) return(tibble(dates = day_str, mean_bias = NA_real_,
-                                         n_stations = nrow(day_data)))
-
-  # convierto a sf y proyecto
   stations_sf <- st_as_sf(day_data, coords = c("lon", "lat"), crs = 4326) |>
     st_transform(25830)
 
-  # leave-one-out: predigo en cada estación usando las demás
   predicted <- map_dbl(seq_len(nrow(stations_sf)), function(i) {
-    train <- stations_sf[-i, ]
-    test  <- stations_sf[i, , drop = FALSE]
     tryCatch({
-      idw_res <- gstat::idw(Precipitation ~ 1, train, test,
+      idw_res <- gstat::idw(Precipitation ~ 1, stations_sf[-i, ],
+                             stations_sf[i, , drop = FALSE],
                              idp = 2, debug.level = 0)
       idw_res$var1.pred
     }, error = function(e) NA_real_)
   })
 
-  bias_vals <- predicted - stations_sf$Precipitation
   tibble(
     dates      = day_str,
-    mean_bias  = mean(bias_vals, na.rm = TRUE),
+    mean_bias  = mean(predicted - stations_sf$Precipitation, na.rm = TRUE),
     n_stations = nrow(stations_sf)
   )
 }
 
-# ============================================================
-# 4. Aplicar sobre todos los días de 2007 con purrr::map
-#    (aplico lo aprendido en ejercicio 5)
-# ============================================================
+dates_2007 <- sort(unique(asturias_data$dates))
+message("Interpolando ", length(dates_2007), " días (LOO IDW)...")
 
-dates_2007 <- unique(asturias_data$dates)
-cat("Procesando", length(dates_2007), "días con IDW leave-one-out...\n")
-message("Esto puede tardar varios minutos")
-
-bias_results <- purrr::map(
-  dates_2007,
-  compute_loo_bias,
-  asturias_data = asturias_data,
-  asturias_prov = asturias_prov,
-  .progress = TRUE
-)
-
+bias_results <- purrr::map(dates_2007, compute_loo_bias,
+                            asturias_data = asturias_data, .progress = TRUE)
 bias_df <- bind_rows(bias_results)
 
 mean_bias_mine <- mean(bias_df$mean_bias, na.rm = TRUE)
-cat("\nBias medio de mi interpolación IDW (2007):",
-    round(mean_bias_mine, 3), "mm/día\n")
-
-print(summary(bias_df$mean_bias))
-
-# guardo resultados intermedios
+cat("Bias medio mi interpolación IDW (2007):", round(mean_bias_mine, 3), "mm/día\n")
 saveRDS(bias_df, here::here("results", "exercise6_loo_bias_2007.rds"))
 
 # ============================================================
-# 5. Datos oficiales interpolados
+# 4. Datos oficiales: extraer en ubicaciones de estaciones
 # ============================================================
+# archivos individuales: YYYYMMDD.parquet, geom en EPSG:25830
 
-# exploro la estructura del parquet oficial
-con <- dbConnect(duckdb())
-dbExecute(con, "INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial;")
-
-cat("\n=== Esquema datos oficiales ===\n")
-tryCatch({
-  schema_off <- dbGetQuery(con, paste0(
-    "DESCRIBE SELECT * FROM read_parquet('", official_url, "**') LIMIT 1"))
-  print(schema_off)
-
-  sample_off <- dbGetQuery(con, paste0(
-    "SELECT * FROM read_parquet('", official_url, "**') LIMIT 3"))
-  print(sample_off)
-}, error = function(e) {
-  cat("Error al leer datos oficiales:", conditionMessage(e), "\n")
-  cat("Comprueba que la URL es accesible y el formato del path es correcto.\n")
-})
-dbDisconnect(con, shutdown = TRUE)
-
-# ============================================================
-# 6. Comparar bias en 15 días de muestra
-# ============================================================
-
+# 15 días de muestra
 set.seed(9473)
-sample_dates <- sample(dates_2007, 15)
-cat("\n15 días de muestra para comparar con datos oficiales:\n")
-print(sort(sample_dates))
+sample_dates <- sort(sample(dates_2007, 15))
+cat("\n15 días de muestra:\n"); print(sample_dates)
 
-# extraigo las coordenadas de las estaciones de Asturias (para consultar
-# los valores oficiales en esas localizaciones)
-stations_asturias <- asturias_data |>
-  distinct(stationID, station_name, lon, lat)
+# preparo estaciones en EPSG:25830 para el join espacial
+stations_unique <- asturias_data |>
+  distinct(stationID, lon, lat) |>
+  filter(!is.na(lon), !is.na(lat)) |>
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) |>
+  st_transform(25830)
 
-# consulta a los datos oficiales en las localizaciones de las estaciones
-# (ajustar nombres de columna según el esquema real del archivo oficial)
-get_official_at_stations <- function(day_str) {
+# bbox de Asturias en EPSG:25830 (para filtrar el grid oficial)
+asturias_bbox <- st_bbox(asturias_prov)
+
+get_official_bias_for_day <- function(day_str, stations_sf, obs_data, bbox) {
+  # construyo la URL con formato YYYYMMDD
+  day_url <- paste0(official_base, format(as.Date(day_str), "%Y%m%d"), ".parquet")
+
   tryCatch({
-    # leo datos oficiales para ese día filtrado por bbox de Asturias
-    # ajustar columnas según esquema verificado arriba
     con <- dbConnect(duckdb())
     dbExecute(con, "LOAD httpfs; LOAD spatial;")
+
+    # leo solo los puntos dentro del bbox de Asturias
     official_day <- dbGetQuery(con, paste0(
-      "SELECT * FROM read_parquet('", official_url, "**')
-       WHERE date = '", day_str, "'"
+      "SELECT Precipitation,
+              ST_X(geom) AS x_etrs, ST_Y(geom) AS y_etrs
+       FROM read_parquet('", day_url, "')
+       WHERE ST_Within(geom, ST_MakeEnvelope(",
+         bbox["xmin"], ", ", bbox["ymin"], ", ",
+         bbox["xmax"], ", ", bbox["ymax"], "))"
     ))
     dbDisconnect(con, shutdown = TRUE)
+
     if (nrow(official_day) == 0) return(NULL)
 
-    # hago un join espacial: encuentro el pixel más cercano a cada estación
-    # (nombre de columnas a adaptar según esquema)
-    official_day
+    # convierto a sf
+    official_sf <- st_as_sf(official_day,
+                             coords = c("x_etrs", "y_etrs"), crs = 25830)
+
+    # para cada estación, encuentro el pixel oficial más cercano
+    nearest_idx <- st_nearest_feature(stations_sf, official_sf)
+    official_prec <- official_sf$Precipitation[nearest_idx]
+
+    # combino con observaciones de ese día
+    obs_day <- obs_data |>
+      filter(dates == day_str, !is.na(Precipitation)) |>
+      arrange(stationID)
+    stations_in_obs <- stations_sf |>
+      filter(stationID %in% obs_day$stationID)
+
+    if (nrow(stations_in_obs) == 0) return(NULL)
+
+    nearest_idx2 <- st_nearest_feature(stations_in_obs, official_sf)
+    official_at_stations <- official_sf$Precipitation[nearest_idx2]
+
+    tibble(
+      dates         = day_str,
+      mean_bias_off = mean(official_at_stations - obs_day$Precipitation, na.rm = TRUE),
+      n_stations    = nrow(stations_in_obs)
+    )
   }, error = function(e) {
     cat("Error en día", day_str, ":", conditionMessage(e), "\n")
     NULL
   })
 }
 
-official_samples <- purrr::map(sample_dates, get_official_at_stations)
+message("Extrayendo datos oficiales para 15 días de muestra...")
+official_bias_list <- purrr::map(
+  sample_dates,
+  get_official_bias_for_day,
+  stations_sf = stations_unique,
+  obs_data    = asturias_data,
+  bbox        = asturias_bbox,
+  .progress   = TRUE
+)
 
-# calculo bias oficial vs observado (cuando los datos estén disponibles)
-# bias_oficial = valor_oficial - valor_observado_en_estacion
+official_bias_df  <- bind_rows(official_bias_list)
+mean_bias_official <- mean(official_bias_df$mean_bias_off, na.rm = TRUE)
 
-# de momento muestro lo que se obtuvo
-cat("\nDatos oficiales recuperados para",
-    sum(!sapply(official_samples, is.null)), "de 15 días\n")
+cat("\n=== Resultados finales ===\n")
+cat("Días con datos oficiales recuperados:", nrow(official_bias_df), "de 15\n")
+cat("Bias medio mi interpolación IDW  :", round(mean_bias_mine, 3), "mm/día\n")
+cat("Bias medio interpolación oficial :", round(mean_bias_official, 3), "mm/día\n")
+
+saveRDS(official_bias_df, here::here("results", "exercise6_official_bias_15days.rds"))
 
 # ============================================================
-# 7. Conclusión: ¿cuál tiene menos bias?
+# 5. Conclusión: ¿cuál tiene menos bias?
 # ============================================================
 
-# en base a los resultados de bias_df (mi IDW):
-cat("\n=== Resumen final ===\n")
-cat("Bias medio mi interpolación IDW :", round(mean_bias_mine, 3), "mm/día\n")
-# cat("Bias medio interpolación oficial:", round(mean_bias_official, 3), "mm/día\n")
-
-# La interpolación oficial probablemente tiene menos bias porque usa métodos
-# más sofisticados (kriging con anisotropía, corrección topográfica, etc.)
-# y un mayor número de estaciones de distintas redes.
-# Mi IDW simple con las estaciones de una sola red da un resultado razonable
-# pero suele sobreestimar en zonas con pocas estaciones y subestimar en valles.
+# La interpolación con menos bias (más cercana a cero) es:
+if (abs(mean_bias_official) < abs(mean_bias_mine)) {
+  cat("La interpolación OFICIAL tiene menos bias en valor absoluto.\n")
+  cat("Esto tiene sentido: usa un grid denso de toda España con múltiples\n")
+  cat("redes de observación y métodos de interpolación más sofisticados.\n")
+  cat("Mi IDW con pocas estaciones locales es una aproximación razonable\n")
+  cat("pero no puede competir con un producto de análisis oficial.\n")
+} else {
+  cat("Mi interpolación IDW tiene menos bias en este caso.\n")
+  cat("Posiblemente el bias del oficial refleja el método distinto:\n")
+  cat("el oficial interpola a un grid y yo evalúo en las propias estaciones,\n")
+  cat("lo que podría sesgar la comparación.\n")
+}
