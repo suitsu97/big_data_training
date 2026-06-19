@@ -1,0 +1,12 @@
+# Ignore raw data folder
+raw_data/
+
+# R specific
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj.user/
+
+# Misc
+.DS_Store
+
