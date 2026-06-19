@@ -1,0 +1,125 @@
+Exercise 2.2 – Scaling meteorological data processing to all Spanish municipalities (2020)
+=========================================================================================
+
+OBJECTIVE
+---------
+Process the daily meteorological parquet file (meteo_stations_2000_2024.parquet) to produce
+daily summaries of temperatures, relative humidity and precipitation for EVERY municipality
+in Spain for the year 2020.
+
+
+CHALLENGES COMPARED TO THE OURENSE CASE
+----------------------------------------
+- Scale: ~8,131 municipalities across all 50 provinces vs. ~20 stations in Ourense.
+- Spatial join required: meteorological data is collected at point stations; to attribute
+  values to municipalities we must spatially interpolate or spatially aggregate
+  (stations whose Voronoi cell or catchment area covers each municipality).
+- Volume: filtering to 2020 already reduces the data, but we still work with all Spanish
+  stations for a full year → potentially millions of rows in memory.
+- Output size: one row per municipality per day → ~8,131 × 365 ≈ 2.97 million rows.
+
+
+PROPOSED STEPS
+--------------
+
+1. DOWNLOAD AND CACHE THE PARQUET FILE
+   - Download meteo_stations_2000_2024.parquet once to a local "raw_data/" folder.
+   - Check file integrity (file size / hash).
+   - This avoids repeated bandwidth use across benchmark runs and subsequent steps.
+
+2. OBTAIN MUNICIPALITY BOUNDARIES
+   - Download the official Spanish municipal boundary shapefile (IGN / INE / GADM).
+     e.g. mapSpain::esp_get_munic() or a direct download from IGN's CNIG.
+   - Reproject to the same CRS as the station coordinates in the parquet file
+     (likely EPSG:4326 WGS84 or ETRS89).
+
+3. LOAD STATION METADATA (COORDINATES)
+   - Read unique (stationID, longitude, latitude, province) rows from the parquet
+     without loading all time-series data (push-down projection + distinct).
+   - Convert to an sf POINT object.
+
+4. SPATIAL ASSIGNMENT: STATION → MUNICIPALITY
+   Strategy options (choose based on accuracy requirements):
+
+   4a. Point-in-polygon (fastest, simplest):
+       Assign each station to the municipality polygon it falls inside.
+       Use sf::st_join(stations_sf, municipalities_sf, join = st_within).
+
+   4b. Thiessen / Voronoi polygons (recommended):
+       Generate Voronoi polygons from station locations.
+       Intersect Voronoi polygons with municipality polygons.
+       Weight-average observations by intersection area when a municipality
+       is covered by multiple Voronoi cells.
+
+   4c. Spatial interpolation (most accurate, slowest):
+       Kriging or IDW for each day and variable.
+       Computationally intensive — consider parallelisation (see step 7).
+
+   For a first pass, 4a (point-in-polygon) is recommended.
+
+5. FILTER AND EXTRACT 2020 DATA WITH DUCKDB
+   - Use DuckDB to read the local parquet, filter WHERE year(date) = 2020, and
+     return only the needed columns (date, stationID, tmax, tmin, tmean, hr, pcp).
+   - DuckDB's predicate push-down makes this efficient even on the full 24-year file.
+
+   Example SQL:
+     SELECT date, stationID, tmax, tmin, tmean, hr, pcp
+     FROM read_parquet('raw_data/meteo_stations_2000_2024.parquet')
+     WHERE year(date) = 2020;
+
+6. JOIN METEOROLOGICAL DATA WITH SPATIAL ASSIGNMENT
+   - Left-join the 2020 station data with the station→municipality lookup table
+     produced in step 4.
+   - Result: one row per station-day with the corresponding municipality code (INE code).
+
+7. AGGREGATE TO MUNICIPALITY-DAY SUMMARIES
+   - Group by (municipality_code, date).
+   - Compute daily summaries:
+       · mean_tmax   = mean(tmax, na.rm = TRUE)
+       · mean_tmin   = mean(tmin, na.rm = TRUE)
+       · mean_tmean  = mean(tmean, na.rm = TRUE)
+       · mean_hr     = mean(hr,   na.rm = TRUE)
+       · total_pcp   = mean(pcp,  na.rm = TRUE)   # or sum, depending on use case
+   - For municipalities with NO station in their Voronoi area, consider:
+       · Using the nearest station (st_nearest_feature).
+       · Flagging them as interpolated vs. observed.
+
+   Parallelisation option: use parallel::mclapply() or mirai to process
+   provinces in parallel (split by province code before grouping).
+
+8. HANDLE MISSING DATA
+   - Some stations may have gaps. Document % missing per variable per station.
+   - Decide on imputation strategy (carry-forward, linear interpolation, or flag NA).
+   - Municipalities with zero assigned stations cannot be summarised from observations
+     alone — document them explicitly.
+
+9. WRITE OUTPUT
+   - Write the final municipality-day data frame to a parquet file
+     (arrow::write_parquet()) in the "data/" folder for downstream use.
+   - Optionally write a CSV summary per province for easy inspection.
+   - Save the station→municipality lookup table for reproducibility.
+
+10. VALIDATION
+    - Spot-check a few municipalities against known meteorological records.
+    - Verify row count ≈ n_municipalities × 365.
+    - Check value ranges are physically plausible
+      (e.g. tmax > tmin, 0 ≤ hr ≤ 100, pcp ≥ 0).
+
+
+APPROXIMATE COMPUTE BUDGET
+---------------------------
+- DuckDB filter (step 5): seconds on local NVMe.
+- Spatial join (step 4a): < 1 minute for ~1,000 stations vs. 8,131 polygons.
+- Aggregation (step 7): seconds with dplyr or DBI/DuckDB.
+- Total wall-clock time (single core): ~ 5–15 minutes depending on hardware and
+  spatial strategy chosen.
+- With parallelisation across 50 provinces: potentially under 2 minutes.
+
+
+TOOLS SUMMARY
+-------------
+  duckdb   → fast filtered read of the parquet file (step 5)
+  sf       → municipality boundaries and spatial join (steps 2–4)
+  dplyr    → aggregation and joining (steps 6–7)
+  arrow    → writing the output parquet (step 9)
+  parallel / mirai → optional parallelisation across provinces (step 7)
